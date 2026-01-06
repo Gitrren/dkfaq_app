@@ -21,7 +21,6 @@ import {
     getFaqHeader,
 } from './faq-loader.mjs';
 
-// ===== Configuração =====
 const TOKEN = process.env.DISCORD_TOKEN;
 const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID;
 const BANNER_URL = 'https://i.imgur.com/hjumDtb.gif';
@@ -35,10 +34,10 @@ const STORE = path.join(process.cwd(), 'message.json');
 const FAQ_FILE = path.join(process.cwd(), 'faq.json');
 const TEST_FAQ_FILE = path.join(process.cwd(), 'testfaq.json');
 
-// Cache de idioma em memória (não persiste entre reinícios)
 const userLangCache = new Map();
 
-// ===== Persistência (Store Multi-Guild) =====
+// Persistência multi-guild: armazena canal, mensagem e nonce para cada servidor
+// O nonce é incrementado a cada atualização para invalidar interações antigas
 const ensureStoreShape = (raw = {}) => {
     const store = { guilds: {} };
 
@@ -72,7 +71,6 @@ const writeStore = (d) => {
     return normalized;
 };
 
-// ===== Logger =====
 function logMessage(tag, message) {
     const msg = `[${tag}] ${message || ''}`.trim();
     if (tag === 'ERROR' || tag === 'WARN') {
@@ -84,12 +82,10 @@ function logMessage(tag, message) {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Estado de suporte à mídia (detectado uma vez por execução)
+// Detecção de suporte a mídia inline do Components V2
+// O Discord.js pode ter diferentes nomes para o tipo de componente de mídia dependendo da versão
 let inlineMediaSupported = null;
-// Carrega FAQ na inicialização
 loadFaq();
-
-// ===== Suporte a Mídia Inline (Components V2) =====
 function detectInlineMediaType() {
     const candidates = ['Media', 'ImageDisplay', 'MediaGallery', 'FileDisplay', 'Image', 'MediaDisplay', 'ImageComponent'];
     for (const name of candidates) {
@@ -107,6 +103,8 @@ function getMediaSupport() {
     return inlineMediaSupported;
 }
 
+// Constrói componente de mídia inline do Components V2
+// Cada tipo de componente (MediaGallery, ImageDisplay, etc) tem uma estrutura diferente
 function buildInlineMediaComponent(url, fileType = 'image') {
     const mediaType = detectInlineMediaType();
     if (!mediaType) return null;
@@ -115,6 +113,7 @@ function buildInlineMediaComponent(url, fileType = 'image') {
         const lowerUrl = url.toLowerCase();
         const isVideo = fileType === 'video' || lowerUrl.endsWith('.webm') || lowerUrl.endsWith('.mp4') || lowerUrl.endsWith('.webp');
 
+        // Imgur requer URL específica para vídeos
         if (isVideo && lowerUrl.includes('imgur')) {
             let videoUrl = url;
             if (url.includes('imgur.com/') && !url.includes('i.imgur.com/')) {
@@ -142,10 +141,8 @@ function buildInlineMediaComponent(url, fileType = 'image') {
     }
 }
 
-// Mapa para imagens reutilizáveis
-const IMAGES = {};
-
-// ===== Parser de Conteúdo =====
+// Parse de marcadores [file:url] e [link:url|label] no texto do FAQ
+// Extrai posições, ordena por índice e reconstrói o conteúdo em partes sequenciais
 function parseContentMarkers(text) {
     const fileRegex = /\[file:(https?:\/\/[^\]]+|[^\]]+)\]/g;
     const linkRegex = /\[link:(https?:\/\/[^\]|]+)\|([^\]]+)\]/g;
@@ -166,6 +163,7 @@ function parseContentMarkers(text) {
     let lastIndex = 0;
 
     for (const marker of markers) {
+        // Texto antes do marcador
         if (marker.index > lastIndex) {
             const textContent = text.slice(lastIndex, marker.index).trim();
             if (textContent) parts.push({ type: 'text', content: textContent });
@@ -179,8 +177,6 @@ function parseContentMarkers(text) {
                 fileUrl = fileRef;
             } else if (fileRef.includes('.') && (fileRef.includes('/') || fileRef.includes('.'))) {
                 fileUrl = `https://${fileRef}`;
-            } else if (IMAGES[fileRef]) {
-                fileUrl = IMAGES[fileRef];
             }
 
             if (fileUrl) {
@@ -198,6 +194,7 @@ function parseContentMarkers(text) {
         lastIndex = marker.index + marker.length;
     }
 
+    // Texto restante após o último marcador
     if (lastIndex < text.length) {
         const textContent = text.slice(lastIndex).trim();
         if (textContent) parts.push({ type: 'text', content: textContent });
@@ -206,7 +203,6 @@ function parseContentMarkers(text) {
     return parts;
 }
 
-// ===== Carregador de FAQ por arquivo =====
 function loadFaqFromFile(filePath) {
     if (!fs.existsSync(filePath)) return null;
     try {
@@ -221,7 +217,6 @@ function getFaqsByFile(filePath, categoryId) {
     if (!data?.faqs) return [];
     const result = [];
     for (const [key, faq] of Object.entries(data.faqs)) {
-        // Check if has content in any language
         const hasContent = faq?.content && Object.values(faq.content).some(v => v && (typeof v === 'string' ? v.trim() : true));
         const hasLabel = faq?.label;
         if ((faq.categoryId || faq.category) === categoryId && hasContent && hasLabel) {
@@ -246,7 +241,8 @@ function faqExistsInFile(filePath, key) {
     return key in (data?.faqs || {});
 }
 
-// ===== Construtores de Componentes =====
+// Constrói a mensagem raiz do FAQ com Components V2
+// Cada categoria vira um StringSelect dropdown, o nonce no customId invalida interações antigas
 function buildCv2Root(nonce = 1, prefix = 'select') {
     const headerText = getFaqHeader('en') || '## **FAQ - Frequently Asked Questions**\nHello and welcome! Here you can access official answers to frequently raised topics by our community.';
     const data = loadFaq();
@@ -264,6 +260,7 @@ function buildCv2Root(nonce = 1, prefix = 'select') {
         customId: `${prefix}_${cat.id}:${nonce}`,
     }));
 
+    // Se não há categorias definidas, deriva das categorias dos FAQs
     if (!categories.length && data?.faqs) {
         const derived = new Set(Object.values(data.faqs).map(f => f.categoryId || f.category).filter(Boolean));
         for (const id of derived) categories.push({ key: id, placeholder: id, customId: `${prefix}_${id}:${nonce}` });
@@ -276,6 +273,7 @@ function buildCv2Root(nonce = 1, prefix = 'select') {
             continue;
         }
 
+        // Limite de 25 opções por select menu do Discord
         const options = faqs.slice(0, 25).map(f => ({ label: f.label, value: f.key }));
 
         components.push({
@@ -405,7 +403,6 @@ function buildCv2Reply(contentKey, lang, isTest = false) {
     };
 }
 
-// ===== Registro de Comandos =====
 async function registerCommands() {
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     const body = [
@@ -439,7 +436,7 @@ async function registerCommands() {
                         {
                             name: 'destino',
                             description: 'Onde salvar o arquivo',
-                            type: 3, // STRING
+                            type: 3,
                             required: false,
                             choices: [
                                 { name: 'faq.json (produção)', value: 'faq' },
@@ -476,7 +473,6 @@ async function registerCommands() {
     }
 }
 
-// ===== Eventos =====
 client.once(Events.ClientReady, async () => {
     logMessage('BOOT', `logado como ${client.user.tag}`);
 
@@ -519,10 +515,8 @@ client.once(Events.ClientReady, async () => {
     logMessage('BOOT', 'pronto');
 });
 
-// Interações
 client.on(Events.InteractionCreate, async (i) => {
     try {
-        // /faq command
         if (i.isChatInputCommand() && i.commandName === 'faq') {
             const subcommand = i.options.getSubcommand();
             const guildId = i.guildId;
@@ -532,7 +526,6 @@ client.on(Events.InteractionCreate, async (i) => {
                 return;
             }
 
-            // /faq setup [channel]
             if (subcommand === 'setup') {
                 const targetChannel = i.options.getChannel('channel') || i.channel;
 
@@ -576,7 +569,6 @@ client.on(Events.InteractionCreate, async (i) => {
                 return;
             }
 
-            // /faq test [channel]
             if (subcommand === 'test') {
                 const targetChannel = i.options.getChannel('channel') || i.channel;
 
@@ -617,10 +609,9 @@ client.on(Events.InteractionCreate, async (i) => {
                 return;
             }
 
-            // /faq import <arquivo> [destino]
             if (subcommand === 'import') {
                 const attachment = i.options.getAttachment('arquivo');
-                const destino = i.options.getString('destino') || 'faq'; // default: faq.json
+                const destino = i.options.getString('destino') || 'faq';
 
                 if (!attachment) {
                     await i.reply({ content: '❌ Anexe um arquivo .json.', flags: MessageFlags.Ephemeral });
@@ -666,13 +657,16 @@ client.on(Events.InteractionCreate, async (i) => {
                     const targetName = destino === 'test' ? 'testfaq.json' : 'faq.json';
                     fs.writeFileSync(targetFile, JSON.stringify(data, null, 4));
 
-                    // Se for faq.json, recarregar na memória
                     if (destino === 'faq') {
-                        const { reloadFaq } = await import('./faq-loader.mjs');
-                        reloadFaq();
+                        try {
+                            const { reloadFaq } = await import('./faq-loader.mjs');
+                            reloadFaq();
+                        } catch (err) {
+                            logMessage('ERROR', `falha ao recarregar FAQ: ${err.message}`);
+                        }
                     }
 
-                    // Atualizar mensagem do FAQ em todos os guilds configurados
+                    // Atualiza mensagens do FAQ em todos os servidores configurados
                     if (destino === 'faq') {
                         const currentStore = readStore();
                         let updatedCount = 0;
@@ -688,6 +682,7 @@ client.on(Events.InteractionCreate, async (i) => {
                                 const message = await channel.messages.fetch(entry.messageId).catch(() => null);
                                 if (!message) continue;
                                 
+                                // Incrementa nonce para invalidar interações antigas
                                 const nextNonce = (entry.nonce || 1) + 1;
                                 await message.edit(buildCv2Root(nextNonce));
                                 entry.nonce = nextNonce;
@@ -716,7 +711,6 @@ client.on(Events.InteractionCreate, async (i) => {
                 return;
             }
 
-            // /faq export [arquivo]
             if (subcommand === 'export') {
                 const arquivo = i.options.getString('arquivo') || 'faq';
                 const targetFile = arquivo === 'test' ? TEST_FAQ_FILE : FAQ_FILE;
@@ -729,12 +723,10 @@ client.on(Events.InteractionCreate, async (i) => {
 
                 try {
                     const fileContent = fs.readFileSync(targetFile, 'utf8');
-                    JSON.parse(fileContent); // valida JSON
+                    JSON.parse(fileContent);
 
-                    // Criar buffer do arquivo para attachment
                     const buffer = Buffer.from(fileContent, 'utf8');
                     
-                    // Botão para o editor online
                     const editorButton = {
                         type: ComponentType.ActionRow,
                         components: [
@@ -768,7 +760,7 @@ client.on(Events.InteractionCreate, async (i) => {
             return;
         }
 
-        // Select menu handlers (faq.json) - matches any category
+        // Regex: select_<categoria>:<nonce> - valida formato e nonce para evitar interações antigas
         if (i.isStringSelectMenu() && /^select_[a-z0-9_]+:\d+$/.test(i.customId)) {
             const contentKey = i.values[0];
             if (!faqExists(contentKey)) {
@@ -780,7 +772,7 @@ client.on(Events.InteractionCreate, async (i) => {
             return;
         }
 
-        // Select menu handlers (testfaq.json) - matches any category
+        // Regex: tselect_<categoria>:<nonce> - versão de teste (testfaq.json)
         if (i.isStringSelectMenu() && /^tselect_[a-z0-9_]+:\d+$/.test(i.customId)) {
             const contentKey = i.values[0];
             if (!faqExistsInFile(TEST_FAQ_FILE, contentKey)) {
@@ -792,7 +784,7 @@ client.on(Events.InteractionCreate, async (i) => {
             return;
         }
 
-        // Language toggle (faq.json)
+        // Toggle de idioma: lang_btn:<contentKey>:<novoIdioma>
         if (i.isButton() && i.customId.startsWith('lang_btn:')) {
             const [, contentKey, newLang] = i.customId.split(':');
             const targetLang = newLang === 'pt' ? 'pt' : 'en';
@@ -801,7 +793,7 @@ client.on(Events.InteractionCreate, async (i) => {
             return;
         }
 
-        // Language toggle (testfaq.json)
+        // Toggle de idioma para versão de teste: tlang_btn:<contentKey>:<novoIdioma>
         if (i.isButton() && i.customId.startsWith('tlang_btn:')) {
             const [, contentKey, newLang] = i.customId.split(':');
             const targetLang = newLang === 'pt' ? 'pt' : 'en';
@@ -817,5 +809,4 @@ client.on(Events.InteractionCreate, async (i) => {
     }
 });
 
-// ===== Inicialização =====
 client.login(TOKEN);
