@@ -1,0 +1,17 @@
+{
+  "name": "drakantosfaq_app",
+  "version": "1.0.0",
+  "description": "bot para faq no discord",
+  "main": "index.mjs",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "discord.js": "latest",
+    "dotenv": "^16.4.5"
+  }
+}
